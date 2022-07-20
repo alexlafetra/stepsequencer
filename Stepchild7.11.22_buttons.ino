@@ -46,6 +46,11 @@ const char UART0_RX_Pin = 17;
 const char OUT_Pin = 16;
 const char loop_Pin = 12;
 
+const unsigned char buttons_load = 14;
+const unsigned char buttons_clockEnable = 12;
+const unsigned char buttons_dataIn =13;
+const unsigned char buttons_clockIn = 15;
+
 // 'eyes', 128x64px
 const unsigned char eyes_bmp [] PROGMEM = {
   0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 
@@ -142,6 +147,9 @@ unsigned short int viewLength;//how big the view is
 unsigned short int seqStart;
 unsigned short int seqEnd;
 
+float scale = 0.5;//HEY this needs to match the initial viewEnd call, otherwise it'll be all fucked up
+//basically, viewEnd * scale = 96;
+
 unsigned short int defaultLength;
 unsigned short int recentID;
 
@@ -201,6 +209,8 @@ int getTrackWithPitch(int);
 unsigned short int addTrack_return(unsigned short int,bool);
 void echoPreview(short unsigned int, short unsigned int, short unsigned int);
 void curvePreview();
+void zoom(bool);
+void updateLookupData_track(unsigned short int);
 
 //Classes-----------------------------------------------------------
 //storage efficient Note class:
@@ -423,7 +433,7 @@ void genCurveDebug(){//this creates the points, then draws them
   }
 }
 
-void drawCurve(Curve curve){
+void drawCurve(Curve curve, unsigned short int x, unsigned short int y, unsigned short int width, unsigned short int height){
   display.clearDisplay();
   unsigned short int stepSize = screenWidth/curve.length;
   for(int point = 0; point<curve.points.size(); point++){
@@ -431,7 +441,8 @@ void drawCurve(Curve curve){
     int x2 = x1+stepSize;
     int y1 = (curve.points[point])/16+curve.xAxis;//so it starts in da middle
     int y2 = (curve.points[point+1])/16+curve.xAxis;
-    display.drawLine(x1,y1,x2,y2,SSD1306_WHITE);
+    display.drawRect(x,y,width,height,SSD1306_WHITE);
+    display.drawLine(x+x1,y+y1,x2,y2,SSD1306_WHITE);
     // display.drawPixel(x1,y1,SSD1306_WHITE);
   }
   display.display();
@@ -445,7 +456,7 @@ void serialPrintCurve(Curve curve){
     Serial.print(curve.points[i]);
     Serial.print(',');
   }
-  drawCurve(debugCurve);
+  drawCurve(debugCurve,0,0,screenWidth,screenHeight);
 }
 vector<String> debugOptions = {"debug","idk","i love you","jk"};
 //Menu object
@@ -521,7 +532,8 @@ void Menu::displayMenu(){
     echoPreview(echoData[0],echoData[1],echoData[2]);
   }
   if(menuTitle == "Curve"){
-    curvePreview();
+    genCurve(debugCurve);
+    curvePreview(debugCurve);
   }
   if(style == 0){//vertical, used for data
     for(int i = 0; i<options.size(); i++){
@@ -594,6 +606,9 @@ void echoPreview(short unsigned int time, short unsigned int decay, short unsign
       drawNote(x1,y1,time,trackHeight,10,false);
   }
 }
+void curvePreview(Curve targetCurve){
+  drawCurve(targetCurve,10,10,40,30);
+}
 void createArp(){
   Arp newArp;
   activeArp = newArp;
@@ -632,9 +647,6 @@ void commitArp(Arp arp){
 //   }
 // }
 
-void curvePreview(){
-
-}
 //Notes ------------------------------------------------------------------------
 unsigned short int getRecentNoteID(int track, int time) {
   unsigned short int recentID;
@@ -1031,6 +1043,11 @@ void selectTrack(unsigned short int id){
 }
 
 
+void selectAllTracks(){
+  for(int track = 0; track<trackNumber; track++){
+    trackData[track].isSelected = !trackData[track].isSelected;
+  }
+}
 //Debug -------------------------------------------------------------------------
 //counts notes
 void debugNoteCount() {
@@ -1133,9 +1150,9 @@ void initSeq(int tracks) {
   activeLoop = 0;
 
   viewStart = 0;
-  viewEnd = 96;
-  viewLength = 96;
-  trackDisplay = screenWidth-viewLength;
+  viewEnd = 192;
+  viewLength = viewEnd-viewStart;
+  trackDisplay = 32;
   defaultLength = subDivInt; //default note length
 
   rotaryActionA = false;//set to true when rotary encoders are moved
@@ -1322,6 +1339,7 @@ void moveView(int val) {
 //moving the cursor around
 void cursorMove(int moveAmount){
   cursorPos += moveAmount;
+  viewLength = viewEnd-viewStart;
   if (cursorPos < seqStart) {
     cursorPos = seqStart;
   }
@@ -1429,16 +1447,74 @@ void shadeArea(unsigned short int x1, unsigned short int y1, unsigned short int 
   }
 }
 
+void drawDottedLineH(unsigned short int x1, unsigned short int x2, unsigned short int y1, unsigned short int dot){
+  if(x1<x2){
+    for(int i = x1; x1<=x2; i+=dot){
+      display.drawPixel(i,y1,SSD1306_WHITE);
+    }
+  }
+  else if(x2<x1){
+    for(int i = x2; x2<=x1; i+=dot){
+      display.drawPixel(i,y1,SSD1306_WHITE);
+    }
+  }
+}
+
+void drawDottedLineV(unsigned short int x1, unsigned short int y1, unsigned short int y2, unsigned short int dot){
+  if(y1<y2){
+    for(int i = y1; i<=y2; i+=dot){
+      display.drawPixel(x1,i,SSD1306_WHITE);
+    }
+  }
+  else if(y2>y1){
+    for(int i = y2; i<=y1; i+=dot){
+      display.drawPixel(x1,i,SSD1306_WHITE);
+    }
+  }
+}
+
+//this one draws a black pixel every dot pixels
+void drawDottedLineV2(unsigned short int x1, unsigned short int y1, unsigned short int y2, unsigned short int dot){
+  if(y1<y2){
+    for(int i = y1; i<=y2; i++){
+      if((i%dot))
+        display.drawPixel(x1,i,SSD1306_WHITE);
+    }
+  }
+  else if(y2>y1){
+    for(int i = y2; i<=y1; i++){
+      if((i%dot))
+        display.drawPixel(x1,i,SSD1306_WHITE);
+    }
+  }
+}
+
+void zoom(bool in){
+  if(!in && viewEnd<seqEnd){
+    scale/=2;
+    viewEnd*=2;
+  }
+  else if(in && viewEnd>24){
+    scale*=2;
+    viewEnd/=2;
+  }
+  viewLength = viewEnd - viewStart;
+}
 //sends data to screen
 //move through rows/columns, printing out data
-void displaySeq() {
-  viewEnd = viewStart + viewLength;
+void displaySeq(){
+  viewLength = viewEnd - viewStart;
   if(viewEnd>seqEnd){
     viewEnd = seqEnd;
+    viewStart = viewEnd-viewLength;
   }
+  if(viewStart>viewEnd){
+    viewStart = seqStart;
+    viewStart = viewEnd-viewLength;
+  }
+  //track scrolling
   endTrack = startTrack + trackNumber;
   trackHeight = (screenHeight - debugHeight) / trackNumber;
-  stepLength = (screenWidth-trackDisplay) / viewLength;
   if(trackNumber>maxTracksShown){
     endTrack = startTrack + maxTracksShown;
     trackHeight = (screenHeight-debugHeight)/maxTracksShown;
@@ -1454,6 +1530,8 @@ void displaySeq() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
+  display.setTextWrap(false);
+
   for (int track = startTrack; track < endTrack; track++) {
     unsigned short int y1 = (track-startTrack) * trackHeight + debugHeight;
     unsigned short int y2 = y1 + trackHeight;
@@ -1467,77 +1545,81 @@ void displaySeq() {
     }
     for (int step = viewStart; step < viewEnd; step++) {
       int id = lookupData[track][step];
-      unsigned short int x1 = trackDisplay+int(step * stepLength) % (screenWidth-trackDisplay);
-      unsigned short int x2 = x1 + stepLength;
+      unsigned short int x1 = trackDisplay+int(step*scale) % (screenWidth-trackDisplay);
+      unsigned short int x2 = x1 + step*scale;
       //measure bars
-      if (!(step % subDivInt)) {
-        display.drawFastVLine(x1, y1, trackHeight, SSD1306_WHITE);
+      if (!(step % subDivInt) && (step%96) && (subDivInt*scale)>4) {
+        //display.drawFastVLine(x1, y1, trackHeight, SSD1306_WHITE);
+        drawDottedLineV(x1,y1,y2,2);
+      }
+      if(!(step%96)){
+        drawDottedLineV2(x1,y1,y2,6);
       }
       //drawing note
       if (id != blank_ID && step == seqData[track][id].startPos){
         Note targetNote = seqData[track][id];
-        unsigned short int length = targetNote.endPos - targetNote.startPos+1;
+        unsigned short int length = (targetNote.endPos - targetNote.startPos+1)*scale;
         if(targetNote.velocity>125){
-          drawNote(x1,y1,stepLength*length,trackHeight,1,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,1,targetNote.isSelected);
         }
         else if(targetNote.velocity>100){
-          drawNote(x1,y1,stepLength*length,trackHeight,2,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,2,targetNote.isSelected);
         }
         else if(targetNote.velocity>80){
-          drawNote(x1,y1,stepLength*length,trackHeight,3,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,3,targetNote.isSelected);
         }
         else if(targetNote.velocity>60){
-          drawNote(x1,y1,stepLength*length,trackHeight,4,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,4,targetNote.isSelected);
         }
         else if(targetNote.velocity>40){
-          drawNote(x1,y1,stepLength*length,trackHeight,5,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,5,targetNote.isSelected);
         }
         else if(targetNote.velocity>20){
-          drawNote(x1,y1,stepLength*length,trackHeight,6,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,6,targetNote.isSelected);
         }
         else if(targetNote.velocity>0){
-          drawNote(x1,y1,stepLength*length,trackHeight,7,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,7,targetNote.isSelected);
         }
         else if(targetNote.velocity == 0){
-          drawNote(x1,y1,stepLength*length,trackHeight,10,targetNote.isSelected);
+          drawNote(x1,y1,length,trackHeight,10,targetNote.isSelected);
         }
         if(targetNote.isSelected){
-          display.drawRoundRect(trackDisplay+x1+1,y1+1,stepLength*length-1,trackHeight-2,4,SSD1306_BLACK);
+          display.drawRoundRect(trackDisplay+(x1+1),y1+1,length-1,trackHeight-2,4,SSD1306_BLACK);
         }
       }
     }
   }
  //loop points
   if(isInView(loopStart)){
-      display.fillTriangle(trackDisplay+stepLength*(loopStart-viewStart), debugHeight-1, trackDisplay+stepLength*(loopStart-viewStart), debugHeight-4, trackDisplay+stepLength*(loopStart-viewStart)+3, debugHeight-4,SSD1306_WHITE);
+      display.fillTriangle(trackDisplay+(loopStart-viewStart)*scale, debugHeight-1, trackDisplay+(loopStart-viewStart)*scale, debugHeight-4, trackDisplay+(loopStart-viewStart)*scale+3, debugHeight-4,SSD1306_WHITE);
   }
   if(isInView(loopEnd-1)){
-      display.drawTriangle(trackDisplay+stepLength*(loopEnd-viewStart)-1, debugHeight-1, trackDisplay+stepLength*(loopEnd-viewStart)-4, debugHeight-4, trackDisplay+stepLength*(loopEnd-viewStart)-1, debugHeight-4,SSD1306_WHITE);
+      display.drawTriangle(trackDisplay+(loopEnd-viewStart-1)*scale, debugHeight-1, trackDisplay+(loopEnd-viewStart)*scale-4, debugHeight-4, trackDisplay+(loopEnd-viewStart)*scale-1, debugHeight-4,SSD1306_WHITE);
   }
   //playhead/rechead
   if(playing && isInView(playheadPos))
-    display.drawRoundRect(trackDisplay+stepLength*(playheadPos-viewStart),debugHeight,subDivInt*stepLength/2, screenHeight-debugHeight, 3, SSD1306_WHITE);
+    display.drawRoundRect(trackDisplay+(playheadPos-viewStart)*scale,debugHeight,subDivInt*stepLength/2, screenHeight-debugHeight, 3, SSD1306_WHITE);
   if(recording && isInView(recheadPos))
-    display.drawRoundRect(trackDisplay+stepLength*(recheadPos-viewStart),debugHeight,subDivInt*stepLength/2, screenHeight-debugHeight, 3, SSD1306_WHITE);
-  //velocity info
-  display.setCursor(screenWidth-48,0);
-  display.print("vel:");
-  if(lookupData[activeTrack][cursorPos] == 0)
-    display.print(defaultVel);
-  else{
-    display.print(seqData[activeTrack][getRecentNoteID(activeTrack,cursorPos)].velocity);
+    display.drawRoundRect(trackDisplay+(recheadPos-viewStart)*scale,debugHeight,subDivInt*stepLength/2, screenHeight-debugHeight, 3, SSD1306_WHITE);
+  if(false){
+    //velocity info
+    display.setCursor(screenWidth-48,0);
+    display.print("vel:");
+    if(lookupData[activeTrack][cursorPos] == 0)
+      display.print(defaultVel);
+    else{
+      display.print(seqData[activeTrack][getRecentNoteID(activeTrack,cursorPos)].velocity);
+    }
   }
   
   //drawing cursor
-  display.drawRect(trackDisplay+int(cursorPos * stepLength) % (screenWidth-trackDisplay), debugHeight, stepLength+1, screenHeight-debugHeight, SSD1306_WHITE);
+  display.drawRect(trackDisplay+int(cursorPos*scale) % (screenWidth-trackDisplay), debugHeight, 2, screenHeight-debugHeight, SSD1306_WHITE);
+  display.setCursor(trackDisplay+int(cursorPos*scale)%(screenWidth-trackDisplay)-8, debugHeight-8);
+  display.print(cursorPos/96 + 1);
+  display.print(":");
+  display.print((cursorPos%96)/24 + 1);
   display.setCursor(0,8);
   display.print(activeLoop);
-  display.print("id:");
-  display.print(lookupData[activeTrack][cursorPos]);
-  display.print(" ");
-  display.print(seqData[activeTrack][lookupData[activeTrack][cursorPos]].startPos);
-  display.print(",");
-  display.print(seqData[activeTrack][lookupData[activeTrack][cursorPos]].endPos);
   //drawing active track highlight
   unsigned short int x1 = trackDisplay;
   unsigned short int y1 = (activeTrack-startTrack) * trackHeight + debugHeight;
@@ -1546,17 +1628,25 @@ void displaySeq() {
   display.drawRect(x1, y1, screenWidth, trackHeight, SSD1306_WHITE);
 
   //drawing debug
-  display.setCursor(2, 0);
-  display.print("BPM:");
-  display.print(bpm);
+  display.setCursor(1, 0);
+  display.print("s:");
+  display.print(viewStart);
+  display.print(" e:");
+  display.print(viewEnd);
+  display.print(" l:");
+  display.print(viewLength);
+  display.print(" c:");
+  display.print(cursorPos);
+  display.setCursor(0,5);
+  display.print("sc:");
+  display.print(scale);
+
   if(playing)
     display.print(" P");
   if(listening && !recording)
     display.print(" L");
   if(recording)
     display.print(" R");
-//  display.drawRect(0,0,128,16,SSD1306_WHITE);
-//  display.drawRect(0,16,128,48,SSD1306_WHITE);
   if(menuIsActive){
     activeMenu.displayMenu();
   }
@@ -1569,7 +1659,7 @@ void displaySeqSerial() {
   Serial.print("\n");
   for (int track = trackNumber - 1; track > -1; track--) {
     Serial.print(trackData[track].pitch);//prints the pitch before each track
-    for (int note = viewStart; note < viewEnd; note++) {
+    for (int note = viewStart; note < viewEnd*scale; note++) {
       if (!(note % subDivInt)) { //if note is a multiple of subDivInt, print a divider
         Serial.print("|");
       }
@@ -1926,6 +2016,16 @@ void movePitch(unsigned char track, bool up, bool loudly) {
     MIDI.sendNoteOn(trackData[track].pitch, defaultVel, trackData[track].channel);
     MIDI.sendNoteOff(trackData[track].pitch, defaultVel, trackData[track].channel);
   }
+  for(int track2 = 0; track2<trackNumber; track2++){
+    if(track2 != track && trackData[track2].isSelected){
+      if (up) {
+        trackData[track2].pitch += 1;
+      }
+      else {
+        trackData[track2].pitch -= 1;
+      }
+    }
+  }
 }
 
 //moves the pitch of all notes up or down by 1
@@ -2149,8 +2249,8 @@ void keyListen() {
       break;
     case 'n':
       Serial.print("writing a note...\n");
-      makeNote(activeTrack, cursorPos, defaultLength, 1); //default makes an 8th note
-        displaySeqSerial();
+      makeNote(activeTrack, cursorPos, subDivInt, 1); //default makes an 8th note
+      displaySeqSerial();
       break;
     case ']':
       setActiveTrack(activeTrack - 1, 1);
@@ -2213,6 +2313,9 @@ void keyListen() {
     case '3'://counts notes
       activeMenu = echoMenu;
       break;
+    case '4'://counts notes
+      activeMenu = curveMenu;
+      break;
     case 'F'://fills sequence
       debugFillSeq();
         displaySeqSerial();
@@ -2248,13 +2351,10 @@ void keyListen() {
         displaySeqSerial();
       break;
     case '+':
-        displaySeqSerial();
-      break;
-    case '=':
-        displaySeqSerial();
+      zoom(true);
       break;
     case '-':
-        displaySeqSerial();
+      zoom(false);
       break;
     case 'B':
       increaseBpm(1);
@@ -2270,7 +2370,7 @@ void keyListen() {
 }
 
 short int x,y;
-bool joy_Press,n,sel=false,shift,del,play,track_Press,note_Press, track_clk, note_clk,loop_Press;
+bool joy_Press,n,sel,shift,del,play,track_Press,note_Press, track_clk, note_clk,loop_Press, fx, menu;
 
 int encoderA = 0,encoderB = 0;
 void rotaryActionA_Handler(){
@@ -2456,16 +2556,16 @@ void joyRead(){
    x = 0;
    y = 0;
   if (xVal > 800) {
-    x = 1;
-  }
-  else if(xVal < 200) {
-    x = -1;
-  }
-  if (yVal > 800) {
     y = 1;
   }
-  else if(yVal < 200) {
+  else if(xVal < 200) {
     y = -1;
+  }
+  if (yVal > 800) {
+    x = -1;
+  }
+  else if(yVal < 200) {
+    x = 1;
   }
 }
 void buttons(){
@@ -2564,11 +2664,14 @@ void buttons(){
   }
   //track press
   if(millis()-lastTime > 200){
-    if(track_Press && sel){  
+    if(track_Press && sel && !shift){  
         selectNotesInTrack();
         selectTrack();
         lastTime = millis();
       }
+  if(track_Press && sel && shift){
+    selectAllTracks();
+  }
     if(track_Press && n){
       addTrack(trackData[trackNumber-1].pitch-1);
       lastTime = millis();
@@ -2596,43 +2699,61 @@ void buttons(){
       lastTime = millis();
     }
   }
+
+  if(menu)
+    menuIsActive = !menuIsActive;
+    
+}
+void readButtons_MPX(){
+  unsigned char buttons[8];
+  digitalWrite(buttons_load,LOW);
+  digitalWrite(buttons_load,HIGH);
+  digitalWrite(buttons_clockIn, HIGH);
+  digitalWrite(buttons_clockEnable,LOW);
+  unsigned char bits = shiftIn(buttons_dataIn, buttons_clockIn, LSBFIRST);
+  digitalWrite(buttons_clockEnable, HIGH);
+
+  //grabbing values from the byte
+  for(int digit = 0; digit<8; digit++){
+    buttons[digit] = (bits>>digit)&1;
+  }
+  //setting each button accordingly
+  n = !buttons[0];
+  sel = !buttons[1];
+  shift = !buttons[2];
+  del = !buttons[3];
+  loop_Press = !buttons[4];
+  play = !buttons[5];
+  fx = !buttons[6];
+  menu = !buttons[7];
 }
 void readButtons(){
   joy_Press = !digitalRead(joy_press_Pin);
-  loop_Press = !digitalRead(loop_Pin);//CHANGE THIS WHEN U GET MORE BUTTONS
-  n = !digitalRead(new_Pin);
-  // sel = !digitalRead(select_Pin);
-  shift = !digitalRead(shift_Pin);
-  del = !digitalRead(delete_Pin);
-  play = !digitalRead(play_Pin);
   track_Press = !digitalRead(track_press_Pin);
   note_Press = !digitalRead(note_press_Pin);
+  readButtons_MPX();
 }
 void encoders(){
   if(encoderA != 0){
-     if(encoderA == 1 && !shift && !track_Press){
+    //changing pitch
+     if(encoderA == 1 && shift && !track_Press){
         if(listening||recording)
          movePitch(activeTrack,1,false);
         else
           movePitch(activeTrack,1,true);
      }
-     if(encoderA == -1 && !shift && !track_Press){
+     if(encoderA == -1 && shift && !track_Press){
         if(listening||recording)
          movePitch(activeTrack,0,false);
         else
           movePitch(activeTrack,0,true);
      }
-     if(encoderA == 1 && shift && !track_Press){
-        if(listening||recording)
-         moveAllPitches(1,false);
-        else
-          moveAllPitches(1,true);
+     //changing zoom
+     if(encoderA == 1 && !shift && !track_Press){
+        zoom(true);
       }
-     if(encoderA == -1 && shift && !track_Press){
-        if(listening||recording)
-         moveAllPitches(0,false);
-        else
-          moveAllPitches(0,true);
+     if(encoderA == -1 && !shift && !track_Press){
+       zoom(false);
      }
      if(encoderA == 1 && track_Press){
         increaseBpm(1);
@@ -2732,18 +2853,25 @@ void setup() {
   pinMode(x_Pin, INPUT);
   pinMode(y_Pin, INPUT);
   pinMode(joy_press_Pin, INPUT_PULLUP);
+
   pinMode(loop_Pin, INPUT_PULLUP);
   pinMode(new_Pin, INPUT_PULLUP);
   pinMode(select_Pin, INPUT_PULLUP);
   pinMode(shift_Pin, INPUT_PULLUP);
   pinMode(play_Pin, INPUT_PULLUP);
   pinMode(delete_Pin, INPUT_PULLUP);
+
   pinMode(track_press_Pin, INPUT_PULLUP);
   pinMode(note_press_Pin, INPUT_PULLUP);
   pinMode(track_clk_Pin, INPUT_PULLUP);
   pinMode(note_clk_Pin, INPUT_PULLUP);
   pinMode(track_data_Pin, INPUT_PULLUP);
   pinMode(note_data_Pin, INPUT_PULLUP);
+
+  pinMode(buttons_load, OUTPUT);
+  pinMode(buttons_clockEnable, OUTPUT);
+  pinMode(buttons_clockIn, OUTPUT);
+  pinMode(buttons_dataIn, INPUT);
 
   attachInterrupt(track_clk_Pin,rotaryActionA_Handler, CHANGE);
   attachInterrupt(track_data_Pin,rotaryActionA_Handler, CHANGE);
